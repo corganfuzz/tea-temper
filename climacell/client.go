@@ -1,6 +1,8 @@
 package climacell
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -19,21 +21,35 @@ type Client struct {
 }
 
 //LatLon properties
-type LatLon struct { Lat, Lon float64}
+type LatLon struct{ Lat, Lon float64 }
 
 //ForecastArgs properties
 type ForecastArgs struct {
-	LatLon 			*LatLon
-	LocationID 		string
-	UnitSystem 		string
-	Fields 			[]string
-	StartTime 		time.Time
-	EndTime 		time.Time
+	LatLon     *LatLon
+	LocationID string
+	UnitSystem string
+	Fields     []string
+	StartTime  time.Time
+	EndTime    time.Time
+}
+
+//ErrorResponse is the response when the API gives you an error message
+type ErrorResponse struct {
+	StatusCode int    `json:"statusCode"`
+	ErrorCode  string `json:"errorCode"`
+	Message    string `json:"message"`
+}
+
+func (err *ErrorResponse) Error() string {
+	if err.ErrorCode == "" {
+		return fmt.Sprintf("%d API error: %s", err.StatusCode, err.Message)
+	}
+	return fmt.Sprintf("%d (%s) API error: %s", err.StatusCode, err.ErrorCode, err.Message)
 }
 
 // New comment
 func New(apiKey string) *Client {
-//	c := &http.Client{}
+	//	c := &http.Client{}
 	c := &http.Client{Timeout: time.Minute}
 	return &Client{
 		c:      c,
@@ -41,8 +57,16 @@ func New(apiKey string) *Client {
 	}
 }
 
-func (c *Client) HourlyForecast(queryParams) ([]Weather, error) {
-	req, err := http.NewRequest("GET", /* URL */ , nil)
+// HourlyForecast gives you the forecast by the hour
+func (c *Client) HourlyForecast(args ForecastArgs) ([]Weather, error) {
+
+	// set up request to the hourly forecast endpoint
+
+	endpt := baseURL.ResolveReference(
+		&url.URL{Path: "weather/forecast/hourly"})
+
+	req, err := http.NewRequest("GET", endpt.String(), nil)
+
 	if err != nil {
 		return nil, err
 	}
@@ -51,20 +75,47 @@ func (c *Client) HourlyForecast(queryParams) ([]Weather, error) {
 
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("apikey", c.apiKey)
-	
-	// add queryparams to request
+	req.URL.RawQuery = args.QueryParams().Encode()
 
-	defer res.Body.Close()
-	var weatherSamples []Weather
-	if err := json.NewDecoder(res.Body).Decode(&weatherSamples); err != nil {
-		return nil, err
-	}
-	return weatherSamples, nil
-
-	res, err := c.c.Do()
+	res, err := c.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
 
-	// deserialize success or erro response and return its data
+	// deserialize the response and return weather data
+
+	defer res.Body.Close()
+
+	// var weatherSamples []Weather
+	// if err := json.NewDecoder(res.Body).Decode(&weatherSamples); err != nil {
+	// 	return nil, err
+	// }
+	// return weatherSamples, nil
+
+	switch res.StatusCode {
+	case 200:
+		var weatherSamples []Weather
+
+		if err := json.NewDecoder(res.Body).Decode(&weatherSamples); err != nil {
+			return nil, err
+		}
+		return weatherSamples, nil
+
+	case 400, 401, 403, 500:
+		var errRes ErrorResponse
+
+		if err := json.NewDecoder(res.Body).Decode(&errRes); err != nil {
+			return nil, err
+		}
+
+		if errRes.StatusCode == 0 {
+			errRes.StatusCode = res.StatusCode
+		}
+		return nil, &errRes
+
+	default:
+		//handle unexpected status codes
+		return nil, fmt.Errorf("unexpected status code %d", res.StatusCode)
+	}
+
 }
